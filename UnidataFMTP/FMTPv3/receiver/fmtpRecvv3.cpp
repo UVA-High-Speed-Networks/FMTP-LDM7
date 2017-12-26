@@ -59,8 +59,8 @@
  * @param[in] mcastPort     UDP multicast port for receiving data products.
  * @param[in] notifier      Callback function to notify receiving application
  *                          of incoming Begin-Of-Product messages.
- * @param[in] ifAddr        IP of the receiver interface for setting a filter
- *                          to accept for multicast packets.
+ * @param[in] ifAddr        IPv4 address of local interface receiving
+ *                          multicast packets and retransmitted data-blocks.
  */
 fmtpRecvv3::fmtpRecvv3(
     const std::string    tcpAddr,
@@ -78,7 +78,7 @@ fmtpRecvv3::fmtpRecvv3(
     mreq(),
     prodidx_mcast(0xFFFFFFFF),
     ifAddr(ifAddr),
-    tcprecv(new TcpRecv(tcpAddr, tcpPort)),
+    tcprecv(new TcpRecv(tcpAddr, tcpPort, inet_addr(ifAddr.c_str()))),
     notifier(notifier),
     mcastSock(0),
     retxSock(0),

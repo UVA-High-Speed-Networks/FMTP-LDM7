@@ -40,17 +40,11 @@
 #include <stdexcept>
 
 
-/**
- * Constructor of TcpRecv.
- *
- * @param[in] tcpaddr           The address of the TCP server: either an IPv4
- *                              address in dotted-decimal format or an Internet
- *                              host name.
- * @param[in] tcpport           The port number of the TCP connection in host
- *                              byte-order.
- */
-TcpRecv::TcpRecv(const std::string& tcpaddr, unsigned short tcpport)
-    : tcpAddr(tcpaddr), tcpPort(tcpport), servAddr()
+TcpRecv::TcpRecv(
+        const std::string& tcpaddr,
+        unsigned short     tcpport,
+        const in_addr_t    iface)
+    : tcpAddr(tcpaddr), tcpPort(tcpport), servAddr(), iface{iface}
 {
 }
 
@@ -155,6 +149,20 @@ void TcpRecv::initSocket()
     if (sockfd < 0)
         throw std::system_error(errno, std::system_category(),
                 "TcpRecv::TcpRecv() error creating socket");
+
+    if (iface != htonl(INADDR_ANY)) {
+        struct sockaddr_in addr = {}; // Zeros content
+        addr.sin_family = AF_INET;    // Same as socket domain
+        addr.sin_addr.s_addr = iface; // `iface` already in network byte-order
+        addr.sin_port = 0;            // Don't care about port number
+        if (bind(sockfd, reinterpret_cast<struct sockaddr*>(&addr),
+                sizeof(addr))) {
+            close(sockfd);
+            throw std::system_error(errno, std::system_category(),
+                    "TcpRecv:InitSocket() Couldn't bind socket to interface " +
+                    addr);
+        }
+    }
 
     while (connect(sockfd, (struct sockaddr*)&servAddr, sizeof(servAddr))) {
         if (errno == ECONNREFUSED || errno == ETIMEDOUT ||

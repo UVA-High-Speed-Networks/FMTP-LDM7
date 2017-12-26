@@ -76,6 +76,18 @@ typedef std::unordered_map<uint32_t, bool> EOPStatusMap;
 
 class fmtpRecvv3 {
 public:
+    /**
+     * Constructs.
+     *
+     * @param[in] tcpAddr       Sender TCP unicast address for retransmission.
+     * @param[in] tcpPort       Sender TCP unicast port for retransmission.
+     * @param[in] mcastAddr     UDP multicast address for receiving data products.
+     * @param[in] mcastPort     UDP multicast port for receiving data products.
+     * @param[in] notifier      Callback function to notify receiving application
+     *                          of incoming Begin-Of-Product messages.
+     * @param[in] ifAddr        IPv4 address of local interface receiving
+     *                          multicast packets and retransmitted data-blocks.
+     */
     fmtpRecvv3(const std::string    tcpAddr,
                const unsigned short tcpPort,
                const std::string    mcastAddr,

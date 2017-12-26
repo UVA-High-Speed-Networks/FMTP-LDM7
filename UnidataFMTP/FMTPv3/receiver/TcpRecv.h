@@ -43,7 +43,20 @@
 class TcpRecv: public TcpBase
 {
 public:
-    TcpRecv(const std::string& tcpaddr, unsigned short tcpport);
+    /**
+     * Constructs.
+     * @param[in] tcpaddr  The address of the TCP server: either an IPv4
+     *                     address in dotted-decimal format or an Internet
+     *                     host name.
+     * @param[in] tcpport  The port number of the TCP connection in host
+     *                     byte-order.
+     * @param[in] iface    IPv4 address of local interface to use in network
+     *                     byte-order
+     */
+    TcpRecv(const std::string& tcpaddr,
+            unsigned short     tcpport,
+            const in_addr_t    iface = htonl(INADDR_ANY));
+
     void Init();  /*!< the start point which upper layer should call */
     /**
      * Receives a header and a payload on the TCP connection. Blocks until the
@@ -86,6 +99,7 @@ private:
     struct sockaddr_in      servAddr;
     std::string             tcpAddr;  /* a copy of the passed-in tcpAddr */
     unsigned short          tcpPort;  /* a copy of the passed-in tcpPort */
+    in_addr_t               iface;    /// Local interface to use in network byte-order
 };
 
 
