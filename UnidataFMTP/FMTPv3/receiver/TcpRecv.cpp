@@ -150,6 +150,13 @@ void TcpRecv::initSocket()
         throw std::system_error(errno, std::system_category(),
                 "TcpRecv::TcpRecv() error creating socket");
 
+    /*
+     * Binding the socket to the VLAN interface isn't necessary to ensure that
+     * the unicast connection uses the VLAN *if* the network routing table maps
+     * the sending FMTP server's IP address to the VLAN interface. The following
+     * assumes this mapping doesn't exist if the interface is explicitly
+     * specified.
+     */
     if (iface != htonl(INADDR_ANY)) {
         struct sockaddr_in addr = {}; // Zeros content
         addr.sin_family = AF_INET;    // Same as socket domain

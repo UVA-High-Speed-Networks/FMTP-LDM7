@@ -59,7 +59,7 @@
  * @param[in] mcastPort     UDP multicast port for receiving data products.
  * @param[in] notifier      Callback function to notify receiving application
  *                          of incoming Begin-Of-Product messages.
- * @param[in] ifAddr        IPv4 address of local interface receiving
+ * @param[in] ifAddr        IPv4 address of local interface for receiving
  *                          multicast packets and retransmitted data-blocks.
  */
 fmtpRecvv3::fmtpRecvv3(
