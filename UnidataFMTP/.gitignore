@@ -19,3 +19,4 @@ tags
 cscope.*
 .DS_Store
 .libs
+m4/*
