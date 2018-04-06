@@ -76,7 +76,7 @@ struct StartRetxThreadInfo
 struct StartTimerThreadInfo
 {
     uint32_t        prodindex; /*!< product index */
-    fmtpSendv3*    sender;    /*!< a poniter to the fmtpSendv3 instance */
+    fmtpSendv3*    sender;    /*!< a pointer to the fmtpSendv3 instance */
 };
 
 

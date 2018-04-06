@@ -958,7 +958,7 @@ void fmtpRecvv3::retxHandler()
         /* dynamically creates a buffer on stack based on payload size */
         const int bufsize = header.payloadlen;
         char      paytmp[bufsize];
-        (void)memset(paytmp, 0, sizeof(paytmp));
+        (void)memset(paytmp, 0, bufsize);
 
         if (header.flags == FMTP_RETX_BOP) {
             (void)pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &ignoredState);

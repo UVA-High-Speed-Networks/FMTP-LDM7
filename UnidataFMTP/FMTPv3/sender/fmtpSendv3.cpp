@@ -68,8 +68,7 @@
  *                           multicast packets. "0.0.0.0" obtains the default
  *                           multicast interface.
  * @param[in] initProdIndex  Initial prodIndex set by receiving applications.
- * @param[in] timeoutRatio   retransmission timeout factor to tradeoff between
- *                           performance and robustness.
+ * @param[in] tsnd           Retransmission timeout duration in minutes.
  */
 fmtpSendv3::fmtpSendv3(const char*                 tcpAddr,
                        const unsigned short        tcpPort,

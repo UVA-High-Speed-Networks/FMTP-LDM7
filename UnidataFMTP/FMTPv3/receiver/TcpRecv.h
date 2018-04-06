@@ -109,5 +109,11 @@ inline std::string operator+(const std::string& lhs, const struct sockaddr_in& r
             std::to_string(static_cast<long long>(ntohs(rhs.sin_port)));
 }
 
+inline std::string operator+(const std::string& lhs, const in_addr_t rhs)
+{
+    struct in_addr inAddr = {rhs};
+    return lhs + inet_ntoa(inAddr);
+}
+
 
 #endif /* FMTP_RECEIVER_TCPRECV_H_ */
