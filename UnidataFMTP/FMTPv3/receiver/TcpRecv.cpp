@@ -186,6 +186,8 @@ void TcpRecv::initSocket()
                     "TcpRecv:TcpRecv() Error connecting to " + servAddr);
         }
     }
-    std::cerr << (std::string("TcpRecv::initSocket(): Connected to host ") +
-            servAddr +  " on interface " + iface) << '\n';
+#if 0
+    std::cerr << "TcpRecv::initSocket(): Socket " + std::to_string(sockfd) +
+            " connected to host " + servAddr +  " on interface " + iface << '\n';
+#endif
 }

@@ -49,6 +49,25 @@
 
 #define DROPSEQ 0*FMTP_DATA_LEN
 
+// This function is for debugging purposes only
+inline static void logMsg(const std::string& msg)
+{
+    //std::cerr << msg << std::endl;
+}
+
+// This function is for debugging purposes only
+inline static void logMsg(const std::exception& ex)
+{
+#if 0
+    try {
+        std::rethrow_if_nested(ex);
+    }
+    catch (const std::exception& nested) {
+        logMsg(nested);
+    }
+    logMsg(ex.what());
+#endif
+}
 
 /**
  * Constructs a sender instance with prodIndex specified and initialized by
@@ -300,6 +319,7 @@ void fmtpSendv3::SetSendRate(uint64_t speed)
  */
 void fmtpSendv3::Start()
 {
+    logMsg("fmtpSendv3::Start(): Entered");
     /* start listening to incoming connections */
     tcpsend->Init();
     /* initialize UDP connection */
@@ -417,10 +437,13 @@ RetxMetadata* fmtpSendv3::addRetxMetadata(void* const data,
  */
 void* fmtpSendv3::coordinator(void* ptr)
 {
+    logMsg("fmtpSendv3::coordinator(): Entered");
     fmtpSendv3* sendptr = static_cast<fmtpSendv3*>(ptr);
     try {
         while(1) {
             int newtcpsockfd = sendptr->tcpsend->acceptConn();
+            logMsg("fmtpSendv3::coordinator(): Accepted connection on socket " +
+                    std::to_string(newtcpsockfd));
             /**
              * Requests the application to verify a new receiver. Shuts down
              * the connection if failing. Otherwise fork a new thread for the
@@ -429,6 +452,8 @@ void* fmtpSendv3::coordinator(void* ptr)
              */
             if (sendptr->notifier) {
                 if (!sendptr->notifier->verify_new_recv(newtcpsockfd)) {
+                    logMsg("fmtpSendv3::coordinator(): Connection on socket " +
+                            std::to_string(newtcpsockfd) + " isn't authorized");
                     sendptr->tcpsend->dismantleConn(newtcpsockfd);
                     continue;
                 }
@@ -645,6 +670,7 @@ void fmtpSendv3::RunRetxThread(int retxsockfd)
 {
     FmtpHeader recvheader;
 
+    logMsg("fmtpSendv3::RunRetxThread(): Entered");
     while(1) {
         /* Receive the message from tcp connection and parse the header */
         int parsestate;
@@ -665,14 +691,19 @@ void fmtpSendv3::RunRetxThread(int retxsockfd)
                 std::rethrow_exception(except);
             }
             // TODO: notify timer not to wait for the offline receiver
+#if 1
+            std::throw_with_nested(std::runtime_error(
+                    "fmtpSendv3::RunRetxThread(): Couldn't parse header"));
+#else
             /* if not last receiver, silently exit */
             pthread_exit(NULL);
+#endif
             // TODO: notify application a receiver went offline?
         }
         if (parsestate == 0) {
             /* encountered EOF, header incomplete */
             throw std::runtime_error("fmtpSendv3::RunRetxThread() parseHeader"
-                                     "error, incomplete header");
+                                     "error: incomplete header");
         }
 
         /* Acquires the product metadata as in exclusive use */
@@ -731,9 +762,14 @@ void fmtpSendv3::RunRetxThread(int retxsockfd)
                 std::rethrow_exception(except);
             }
             // TODO: notify timer not to wait for the offline receiver
+#if 1
+            std::throw_with_nested(std::runtime_error(
+                    "fmtpSendv3::RunRetxThread(): Couldn't reply to request"));
+#else
             /* if not last receiver, silently exit */
             pthread_exit(NULL);
             // TODO: notify application a receiver went offline?
+#endif
         }
 
         /* Releases the product metadata in exclusive use */
@@ -1178,16 +1214,21 @@ void fmtpSendv3::setTimerParameters(RetxMetadata* const senderProdMeta)
  */
 void fmtpSendv3::StartNewRetxThread(int newtcpsockfd)
 {
+    logMsg("fmtpSendv3::StartNewRetxThread(): Entered");
     pthread_t t;
 
     StartRetxThreadInfo* retxThreadInfo = new StartRetxThreadInfo();
     retxThreadInfo->retxmitterptr       = this;
     retxThreadInfo->retxsockfd          = newtcpsockfd;
 
-    int retval = pthread_create(&t, NULL, &fmtpSendv3::StartRetxThread,
+    int retval = ::pthread_create(&t, NULL, &fmtpSendv3::StartRetxThread,
                                 retxThreadInfo);
     if(retval != 0)
     {
+        logMsg(std::system_error(retval, std::system_category(),
+                "fmtpSendv3::StartNewRetxThread(): Couldn't create thread for "
+                " retransmission handler for socket " +
+                std::to_string(newtcpsockfd)));
         /*
          * If a new thread can't be created, the newly created socket needs to
          * be closed and removed from the TcpSend::connSockList.
@@ -1211,28 +1252,30 @@ void fmtpSendv3::StartNewRetxThread(int newtcpsockfd)
 
 
 /**
- * Use the passed-in pointer to extract parameters. The first pointer as a
- * pointer of fmtpSendv3 instance can start fmtpSendv3 member function.
- * The second parameter is sockfd, the third one is the prodindex-prodptr map.
- * If the callee throws any exception, the try-catch structure will catch that
- * and terminates the thread itself as well as other associated resources.
+ * Execute the receiver-specific retransmission handler for missed data blocks.
  *
- * @param[in] *ptr    a void type pointer that points to whatever data struct.
+ * Called by `::pthread_create()`.
+ *
+ * @param[in,out] ptr   Pointer to containing `fmtpSendv3` instance
+ * @retval        NULL  Always
  */
 void* fmtpSendv3::StartRetxThread(void* ptr)
 {
+    logMsg("fmtpSendv3::StartRetxThread(): Entered");
     StartRetxThreadInfo* newptr = static_cast<StartRetxThreadInfo*>(ptr);
     try {
         newptr->retxmitterptr->RunRetxThread(newptr->retxsockfd);
     }
-    catch (std::runtime_error& e) {
-        int exitStatus;
-        pthread_t t = pthread_self();
-
+    catch (const std::exception& e) {
+        /*
+         * All end-of-thread exceptions must be caught or `std::terminate()`
+         * will be called.
+         */
+        logMsg(e);
         newptr->retxmitterptr->tcpsend->rmSockInList(newptr->retxsockfd);
         close(newptr->retxsockfd);
-        newptr->retxmitterptr->retxThreadList.remove(t);
-        pthread_exit(&exitStatus);
+        pthread_t thisThread = ::pthread_self();
+        newptr->retxmitterptr->retxThreadList.remove(thisThread);
     }
     return NULL;
 }

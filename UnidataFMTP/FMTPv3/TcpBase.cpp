@@ -29,6 +29,7 @@
 #include "TcpBase.h"
 
 #include <errno.h>
+#include <iostream>
 #include <netdb.h>
 #include <string>
 #include <sys/socket.h>
@@ -80,8 +81,15 @@ size_t TcpBase::recvall(const int sock, void* const buf, const size_t nbytes)
                     "TcpBase::recvall() Error receiving from socket " +
                     std::to_string(sock));
         }
-        if (nread == 0)
+        if (nread == 0) {
+#if 0
+            std::cerr << "TcpBase::recvall(): Only read " <<
+                    std::to_string(nread) << " of " << std::to_string(nbytes) <<
+                    " requested bytes from TCP socket " << std::to_string(sock)
+                    << '\n';
+#endif
             break; // EOF encountered
+        }
         ptr += nread;
         nleft -= nread;
     }

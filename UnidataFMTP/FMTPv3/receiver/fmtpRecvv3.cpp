@@ -941,11 +941,11 @@ void fmtpRecvv3::retxHandler()
          */
         if (nbytes == 0) {
             Stop();
-            /*
+#if 1
             throw std::runtime_error("fmtpRecvv3::retxHandler() "
                     "Error reading FMTP header: "
-                    "EOF read from the retransmission TCP socket.");
-            */
+                    "EOF read from retransmission TCP socket.");
+#endif
         }
         else {
             /* TcpRecv::recvData() will return requested number of bytes */
@@ -1834,7 +1834,7 @@ void fmtpRecvv3::stopJoinRetxHandler()
 
 /**
  * Starts the multicast-receiving task of a FMTP receiver. Called by
- * `pthread_create()`.
+ * `::pthread_create()`.
  *
  * @param[in] arg   Pointer to the FMTP receiver.
  * @retval    NULL  Always.
