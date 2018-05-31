@@ -723,10 +723,11 @@ void fmtpRecvv3::mcastHandler()
     {
         FmtpHeader   header;
         /* 
-         * Coverity Scan #1: Issue 5: Medium risk, coverity interprets recv() as "tainting" header object. 
-         * If my understanding is correct, Coverity sees the recv() changing the header object as an error,
-         * however this is simply the way that the recv() function works (a limitation of C++'s inability to return
-         * more than one return value).
+         * Coverity Scan #1: Issue 5: Medium risk, coverity interprets recv() as
+         * "tainting" header object. If my understanding is correct, Coverity
+         * sees the recv() changing the header object as an error, however this
+         * is simply the way that the recv() function works (a limitation of
+         * C++'s inability to return more than one return value).
          */
         
 	const ssize_t nbytes = recv(mcastSock, &header, sizeof(header),
