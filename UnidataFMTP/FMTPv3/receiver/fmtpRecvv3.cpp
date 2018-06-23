@@ -2059,25 +2059,16 @@ void fmtpRecvv3::taskExit(const std::exception_ptr& e)
  */
 void fmtpRecvv3::WriteToLog(const std::string& content)
 {
-    time_t rawtime;
-    struct tm *timeinfo;
-    char buf[30];
+    time_t      rawtime;
+    struct tm*  timeinfo;
+    char        buf[30];
     /* create logs  directory if it doesn't exist */
-    struct stat st = {0};
-    /* 
-     * Coverity Scan #1: Issue 4: Low risk, race condition on this check if the logs directory yet exists.
-     * For now, we are ignoring this known issue. The cost of locking on this simple check would slow the very crucial
-     * logging process down too much. Make note in future scans - 8/3/2016 Ryan Aubrey.
-     */
-    if (stat("logs", &st) == -1) {
-        /*
- 	 * Coverity Scan #1: Fix #6: Handle mkdir possible failure return value of -1. 
- 	 * This could fail because of lack of permissions.
- 	 */
-	if (mkdir("logs", 0755) < 0){
-		throw std::runtime_error("fmtpRecvv3::WriteToLog(): unable to create logs directory. This could be a permissions issue.");	
-	}
-    }
+    int         status = mkdir("logs", 0755);
+
+    if (status && status != EEXIST)
+        throw std::runtime_error("fmtpRecvv3::WriteToLog(): unable to create "
+                "logs directory. This could be a permissions issue.");
+
     /* allocate a large enough buffer in case some long hostnames */
     char hostname[1024];
     gethostname(hostname, 1024);
