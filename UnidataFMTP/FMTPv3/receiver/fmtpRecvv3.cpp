@@ -682,26 +682,30 @@ void fmtpRecvv3::joinGroup(
         std::string          mcastAddr,
         const unsigned short mcastPort)
 {
+    if((mcastSock = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::joinGroup() creating socket failed");
+
     (void) memset(&mcastgroup, 0, sizeof(mcastgroup));
     mcastgroup.sin_family = AF_INET;
     // mcastgroup.sin_addr.s_addr = htonl(INADDR_ANY);
     mcastgroup.sin_port = htons(mcastPort);
     mcastgroup.sin_addr.s_addr = inet_addr(mcastAddr.c_str());
-    if((mcastSock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        throw std::runtime_error("fmtpRecvv3::joinGroup() creating socket failed");
-    }
+
     if (::bind(mcastSock, (struct sockaddr *) &mcastgroup, sizeof(mcastgroup))
-            < 0) {
-        throw std::runtime_error("fmtprecvv3::joingroup(): couldn't bind socket "
-                " to multicast group " + mcastgroup);
-    }
+            < 0)
+        throw std::system_error(errno, std::system_category(),
+                "fmtprecvv3::joingroup(): couldn't bind socket  to multicast "
+                "group " + mcastgroup);
+
     mreq.imr_multiaddr.s_addr = inet_addr(mcastAddr.c_str());
     mreq.imr_interface.s_addr = inet_addr(ifAddr.c_str());
-    if( setsockopt(mcastSock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq,
-                   sizeof(mreq)) < 0 ) {
-        throw std::runtime_error("fmtpRecvv3::joinGroup() setsockopt() add "
-                "membership failed.");
-    }
+
+    if (::setsockopt(mcastSock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq,
+                   sizeof(mreq)) < 0 )
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::joinGroup() Couldn't join multicast group " +
+                mcastAddr + " on interface " + ifAddr);
 }
 
 
