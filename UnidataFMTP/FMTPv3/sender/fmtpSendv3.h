@@ -49,6 +49,7 @@
 #include "TcpSend.h"
 #include "UdpSend.h"
 #include "fmtpBase.h"
+#include "Serializer.h"
 
 
 class fmtpSendv3;
@@ -81,10 +82,39 @@ struct StartTimerThreadInfo
 
 
 /**
- * sender side class handling the multicasting, restransmission and timeout.
+ * sender side class handling the multicasting, retransmission and timeout.
  */
 class fmtpSendv3
 {
+    class UdpSerializer : public Serializer
+    {
+        UdpSend*     udpSend;                  /// UDP sender
+        char         buf[MAX_FMTP_PACKET_LEN]; /// Network byte-order buffer
+        char* const  end;                      /// One beyond `buf`
+        char*        start;                    /// Start of current segment
+        char*        next;                     /// Next position in current segment
+        struct iovec iovec[IOV_MAX+1];         /// Gather write vector
+        int          iovIndex;                 /// Current `iovec` element
+
+        void  reset();
+        void  nextBufSeg();
+        void  vetSeg();
+        void  add(const void* value, unsigned nbytes);
+
+    protected:
+        void add(const uint16_t value);
+        void add(const uint32_t value);
+
+    public:
+        using Serializer::encode;
+
+        UdpSerializer(UdpSend* udpSend);
+
+        void encode(const void* bytes, unsigned nbytes);
+
+        void flush();
+    };
+
 public:
     explicit fmtpSendv3(
                  const char*           tcpAddr,
@@ -128,13 +158,17 @@ private:
     /**
      * Adds and entry for a data-product to the retransmission set.
      *
-     * @param[in] data      The data-product.
-     * @param[in] dataSize  The size of the data-product in bytes.
+     * @param[in] data       The data-product.
+     * @param[in] dataSize   The size of the data-product in bytes.
+     * @param[in] metadata   Product-specific metadata
+     * @param[in] metaSize   Size of `metadata` in bytes
+     * @param[in] startTime  Time product given to FMTP layer for transmission
      * @return              The corresponding retransmission entry.
      * @throw std::runtime_error  if a retransmission entry couldn't be created.
      */
     RetxMetadata* addRetxMetadata(void* const data, const uint32_t dataSize,
-                                  void* const metadata, const uint16_t metaSize);
+                                  void* const metadata, const uint16_t metaSize,
+                                  const struct timespec* startTime);
     static uint32_t blockIndex(uint32_t start) {return start/FMTP_DATA_LEN;}
     /** new coordinator thread */
     static void* coordinator(void* ptr);
@@ -209,7 +243,8 @@ private:
      */
     void retransEOP(const FmtpHeader* const  recvheader, const int sock);
     void SendBOPMessage(uint32_t prodSize, void* metadata,
-                        const uint16_t metaSize);
+                        const uint16_t metaSize,
+                        const struct timespec& startTime);
     /**
      * Multicasts the data of a data-product.
      *
@@ -274,6 +309,9 @@ private:
     std::chrono::high_resolution_clock::time_point start_t;
     std::chrono::high_resolution_clock::time_point end_t;
     /* member variables for measurement use ends */
+
+    /// Serializes objects for multicasting
+    UdpSerializer       udpSerializer;
 };
 
 

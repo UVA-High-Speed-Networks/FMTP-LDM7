@@ -29,6 +29,9 @@
 
 
 #include "fmtpRecvv3.h"
+#ifdef LDM_LOGGING
+#include "log.h"
+#endif
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -49,6 +52,12 @@
 
 #define Frcv 20
 
+#ifdef LDM_LOGGING
+static void freeLogging(void* arg)
+{
+    log_free();
+}
+#endif
 
 /**
  * Constructs the receiver side instance (for integration with LDM).
@@ -97,6 +106,7 @@ fmtpRecvv3::fmtpRecvv3(
     //linkspeed(0),
     /* Coverity Scan #1: Issue #2. Initialize notifyprodidx to 0 for product index */
     notifyprodidx(0),
+    mcastHndlrStarted(false),
     linkspeed(20000000),
     retxHandlerCanceled(ATOMIC_FLAG_INIT),
     mcastHandlerCanceled(ATOMIC_FLAG_INIT),
@@ -181,7 +191,7 @@ void fmtpRecvv3::Start()
     /** connect to the sender */
     tcprecv->Init();
 
-    joinGroup(mcastAddr, mcastPort);
+    joinGroup(tcpAddr, mcastAddr, mcastPort);
 
     StartRetxProcedure();
     startTimerThread();
@@ -190,7 +200,8 @@ void fmtpRecvv3::Start()
                                 this);
     if (status) {
         Stop();
-        throw std::runtime_error("fmtpRecvv3::Start(): Couldn't start "
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::Start(): Couldn't start "
                 "multicast-receiving thread, failed with status = "
                 + std::to_string(status));
     }
@@ -224,7 +235,8 @@ void fmtpRecvv3::Start()
 /**
  * Stops a running FMTP receiver. Returns immediately. Idempotent.
  *
- * @pre  `fmtpRecvv3::Start()` was previously called.
+ * @pre                `fmtpRecvv3::Start()` was previously called.
+ * @asyncsignalsafety  Unsafe
  */
 void fmtpRecvv3::Stop()
 {
@@ -276,6 +288,9 @@ bool fmtpRecvv3::addUnrqBOPinSet(uint32_t prodindex)
  */
 void fmtpRecvv3::mcastBOPHandler(const FmtpHeader& header)
 {
+#ifdef LDM_LOGGING
+    log_debug("Entered");
+#endif
     #ifdef MODBASE
         uint32_t tmpidx = header.prodindex % MODBASE;
     #else
@@ -295,7 +310,8 @@ void fmtpRecvv3::mcastBOPHandler(const FmtpHeader& header)
     const ssize_t nbytes = recv(mcastSock, pktBuf, bufsize, 0);
 
     if (nbytes < 0) {
-        throw std::runtime_error("fmtpRecvv3::mcastBOPHandler() recv() got less"
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::mcastBOPHandler() recv() got less"
                 "than 0 bytes returned.");
     }
 
@@ -307,6 +323,9 @@ void fmtpRecvv3::mcastBOPHandler(const FmtpHeader& header)
      * between last logged prodindex and currently received prodindex.
      */
     requestMissingBopsExclusive(header.prodindex);
+#ifdef LDM_LOGGING
+    log_debug("Returning");
+#endif
 }
 
 
@@ -319,6 +338,9 @@ void fmtpRecvv3::mcastBOPHandler(const FmtpHeader& header)
 void fmtpRecvv3::retxBOPHandler(const FmtpHeader& header,
                                  const char* const  FmtpPacketData)
 {
+#ifdef LDM_LOGGING
+    log_debug("Entered");
+#endif
     #ifdef MODBASE
         uint32_t tmpidx = header.prodindex % MODBASE;
     #else
@@ -334,6 +356,9 @@ void fmtpRecvv3::retxBOPHandler(const FmtpHeader& header,
     #endif
 
     BOPHandler(header, FmtpPacketData);
+#ifdef LDM_LOGGING
+    log_debug("Returning");
+#endif
 }
 
 
@@ -354,37 +379,45 @@ void fmtpRecvv3::BOPHandler(const FmtpHeader& header,
      * Every time a new BOP arrives, save the msg to check following data
      * packets
      */
-    const size_t BOPCONST = sizeof(BOPmsg.start.wire) + sizeof(BOPmsg.prodsize)
+    const size_t BOPCONST = sizeof(BOPmsg.startTime) + sizeof(BOPmsg.prodsize)
             + sizeof(BOPmsg.metasize);
     if (header.payloadlen < BOPCONST) {
         throw std::runtime_error("fmtpRecvv3::BOPHandler(): packet too small");
     }
-    const unsigned char* wire = (unsigned char*)FmtpPacketData;
+    const char* wire = FmtpPacketData;
 
-    uint32_t* uint32 = (uint32_t*)wire;
-    BOPmsg.start.host.tv_sec = (time_t)ntohl(*uint32++) << 32;
-    BOPmsg.start.host.tv_sec |= ntohl(*uint32++);
-    BOPmsg.start.host.tv_nsec = ntohl(*uint32++);
-    wire = (unsigned char*)uint32;
+    const uint32_t* uint32p = (const uint32_t*)wire;
+    BOPmsg.startTime[0] = ntohl(*uint32p++);
+    BOPmsg.startTime[1] = ntohl(*uint32p++);
+    BOPmsg.startTime[2] = ntohl(*uint32p++);
 
-    BOPmsg.prodsize = ntohl(*(uint32_t*)wire);
-    wire += sizeof(BOPmsg.prodsize);
+    BOPmsg.prodsize = ntohl(*uint32p++);
 
-    BOPmsg.metasize = ntohs(*(uint16_t*)wire);
-    wire += sizeof(BOPmsg.metasize);
+    const uint16_t* uint16p = (const uint16_t*)uint32p;
+    BOPmsg.metasize = ntohs(*uint16p++);
 
-    if ((header.payloadlen - BOPCONST) != BOPmsg.metasize) {
-        throw std::runtime_error("fmtpRecvv3::BOPHandler(): metasize "
-                "mismatched payload indicated by header");
-    }
+    if (header.payloadlen < BOPCONST + BOPmsg.metasize)
+        throw std::runtime_error("fmtpRecvv3::BOPHandler(): metadata too big: "
+                "payloadlen (" + std::to_string(header.payloadlen) + ") < "
+                "BOPCONST (" + std::to_string(BOPCONST) + ") + metasize (" +
+                std::to_string(BOPmsg.metasize) + ")");
+
+    wire = (const char*)uint16p;
     (void)memcpy(BOPmsg.metadata, wire, BOPmsg.metasize);
+
+#ifdef LDM_LOGGING
+    log_debug("Received BOP {header={index=%lu, payload=%u}, "
+            "bop={prodsize=%lu, metasize=%u}}",
+            (unsigned long)header.prodindex, header.payloadlen,
+            (unsigned long)BOPmsg.prodsize, BOPmsg.metasize);
+#endif
 
     /**
      * Here a strict check is performed to make sure the information in
      * trackermap and BlockMNG would not be overwritten by duplicate BOP.
      * By design, a product should exist in both the trackermap and
      * BlockMNG or neither, which is the condition of executing all the
-     * initialization. Also, notify_of_bop() will only be called for a
+     * initialization. Also, startProd() will only be called for a
      * fresh new BOP. All the duplicate calls will be suppressed.
      */
     bool insertion = pSegMNG->addProd(header.prodindex, BOPmsg.prodsize);
@@ -395,7 +428,12 @@ void fmtpRecvv3::BOPHandler(const FmtpHeader& header,
     }
     if (insertion && !inTracker) {
         if(notifier) {
-            notifier->notify_of_bop(BOPmsg.start.host, header.prodindex,
+            struct timespec startTime;
+            startTime.tv_sec =
+                    (static_cast<uint64_t>(BOPmsg.startTime[0]) << 32) |
+                    BOPmsg.startTime[1];
+            startTime.tv_nsec = BOPmsg.startTime[2];
+            notifier->startProd(startTime, header.prodindex,
                     BOPmsg.prodsize, BOPmsg.metadata, BOPmsg.metasize,
                     &prodptr);
         }
@@ -572,7 +610,7 @@ void fmtpRecvv3::EOPHandler(const FmtpHeader& header)
             inTracker = trackermap.count(header.prodindex);
         }
         if (notifier && inTracker) {
-            notifier->notify_of_eop(now, header.prodindex);
+            notifier->endProd(now, header.prodindex);
         }
         else if (inTracker) {
             /**
@@ -690,13 +728,15 @@ void fmtpRecvv3::initEOPStatus(const uint32_t prodindex)
 /**
  * Join multicast group specified by mcastAddr:mcastPort.
  *
- * @param[in] mcastAddr      Udp multicast address for receiving data products.
- * @param[in] mcastPort      Udp multicast port for receiving data products.
+ * @param[in] srcAddr        IPv4 address of multicast source
+ * @param[in] mcastAddr      IPv4 address of multicast group
+ * @param[in] mcastPort      Port number of multicast group
  * @throw std::runtime_error if the socket couldn't be created.
  * @throw std::runtime_error if the socket couldn't be bound.
  * @throw std::runtime_error if the socket couldn't join the multicast group.
  */
 void fmtpRecvv3::joinGroup(
+        std::string          srcAddr,
         std::string          mcastAddr,
         const unsigned short mcastPort)
 {
@@ -713,17 +753,19 @@ void fmtpRecvv3::joinGroup(
     if (::bind(mcastSock, (struct sockaddr *) &mcastgroup, sizeof(mcastgroup))
             < 0)
         throw std::system_error(errno, std::system_category(),
-                "fmtprecvv3::joingroup(): couldn't bind socket  to multicast "
+                "fmtprecvv3::joinGroup(): couldn't bind socket  to multicast "
                 "group " + mcastgroup);
 
     mreq.imr_multiaddr.s_addr = inet_addr(mcastAddr.c_str());
     mreq.imr_interface.s_addr = inet_addr(ifAddr.c_str());
+    mreq.imr_sourceaddr.s_addr = inet_addr(srcAddr.c_str());
 
-    if (::setsockopt(mcastSock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq,
+    if (::setsockopt(mcastSock, IPPROTO_IP, IP_ADD_SOURCE_MEMBERSHIP, &mreq,
                    sizeof(mreq)) < 0 )
         throw std::system_error(errno, std::system_category(),
                 "fmtpRecvv3::joinGroup() Couldn't join multicast group " +
-                mcastAddr + " on interface " + ifAddr);
+                mcastAddr + " from source " + srcAddr + " on interface " +
+                ifAddr);
 }
 
 
@@ -740,7 +782,6 @@ void fmtpRecvv3::joinGroup(
  */
 void fmtpRecvv3::mcastHandler()
 {
-    static bool started = false; // Has this method been called?
     while(1)
     {
         FmtpHeader   header;
@@ -764,8 +805,8 @@ void fmtpRecvv3::mcastHandler()
         (void)pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &initState);
 
         if (nbytes < 0) {
-            throw std::runtime_error("fmtpRecvv3::mcastHandler() recv() less "
-                    "than zero bytes.");
+            throw std::system_error(errno, std::system_category(),
+                    "fmtpRecvv3::mcastHandler() recv() less than zero bytes.");
         }
         if (nbytes != sizeof(header)) {
             throw std::runtime_error("fmtpRecvv3::mcastHandler() Invalid packet "
@@ -774,9 +815,9 @@ void fmtpRecvv3::mcastHandler()
 
         decodeHeader(header);
 
-        if (!started) {
+        if (!mcastHndlrStarted) {
             prodidx_mcast = header.prodindex;
-            started = true;
+            mcastHndlrStarted = true;
         }
 
         if (header.flags == FMTP_BOP) {
@@ -820,8 +861,8 @@ void fmtpRecvv3::mcastEOPHandler(const FmtpHeader& header)
     const ssize_t nbytes = recv(mcastSock, pktBuf, FMTP_HEADER_LEN, 0);
 
     if (nbytes < 0) {
-        throw std::runtime_error("fmtpRecvv3::mcastEOPHandler() recv() less than "
-                "zero bytes.");
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::mcastEOPHandler() recv() less than zero bytes.");
     }
 
     #ifdef MODBASE
@@ -976,7 +1017,7 @@ void fmtpRecvv3::retxHandler()
         }
         else {
             /* TcpRecv::recvData() will return requested number of bytes */
-            /*This should initialize header: Check Coverity check #3 below. 
+            /* This should initialize header: Check Coverity check #3 below.
  	     * Coverity only complained about header being uninitialized there. 
  	     */
 	    decodeHeader(pktHead, header);
@@ -1156,7 +1197,7 @@ void fmtpRecvv3::retxHandler()
                     inTracker = trackermap.count(header.prodindex);
                 }
                 if (notifier && inTracker) {
-                    notifier->notify_of_eop(now, header.prodindex);
+                    notifier->endProd(now, header.prodindex);
                 }
                 else if (inTracker) {
                     /**
@@ -1242,7 +1283,7 @@ void fmtpRecvv3::retxHandler()
                 #endif
 
                 if (notifier) {
-                    notifier->notify_of_missed_prod(header.prodindex);
+                    notifier->missedProd(header.prodindex);
                 }
                 else {
                     /**
@@ -1421,7 +1462,8 @@ void fmtpRecvv3::readMcastData(const FmtpHeader& header)
     }
 
     if (nbytes == -1) {
-        throw std::runtime_error("fmtpRecvv3::readMcastData(): readv() EOF.");
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::readMcastData(): readv() EOF.");
     }
     else {
         checkPayloadLen(header, nbytes);
@@ -1681,6 +1723,9 @@ bool fmtpRecvv3::reqEOPifMiss(const uint32_t prodindex)
  */
 void* fmtpRecvv3::runTimerThread(void* ptr)
 {
+#ifdef LDM_LOGGING
+    pthread_cleanup_push(freeLogging, nullptr);
+#endif
     fmtpRecvv3* const recvr = static_cast<fmtpRecvv3*>(ptr);
     try {
         recvr->timerThread();
@@ -1688,6 +1733,9 @@ void* fmtpRecvv3::runTimerThread(void* ptr)
     catch (std::runtime_error& e) {
         recvr->taskExit(std::current_exception());
     }
+#ifdef LDM_LOGGING
+    pthread_cleanup_pop(true);
+#endif
     return NULL;
 }
 
@@ -1778,6 +1826,9 @@ bool fmtpRecvv3::sendRetxEnd(uint32_t prodindex)
  */
 void* fmtpRecvv3::StartRetxRequester(void* ptr)
 {
+#ifdef LDM_LOGGING
+    pthread_cleanup_push(freeLogging, nullptr);
+#endif
     fmtpRecvv3* const recvr = static_cast<fmtpRecvv3*>(ptr);
     try {
         recvr->retxRequester();
@@ -1785,6 +1836,9 @@ void* fmtpRecvv3::StartRetxRequester(void* ptr)
     catch (std::runtime_error& e) {
         recvr->taskExit(std::current_exception());
     }
+#ifdef LDM_LOGGING
+    pthread_cleanup_pop(true);
+#endif
     return NULL;
 }
 
@@ -1807,7 +1861,8 @@ void fmtpRecvv3::stopJoinRetxRequester()
 
     int status = pthread_join(retx_rq, NULL);
     if (status) {
-        throw std::runtime_error("fmtpRecvv3::stopJoinRetxRequester() Couldn't "
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::stopJoinRetxRequester() Couldn't "
                 "join retransmission-request thread");
     }
 }
@@ -1822,6 +1877,9 @@ void fmtpRecvv3::stopJoinRetxRequester()
  */
 void* fmtpRecvv3::StartRetxHandler(void* ptr)
 {
+#ifdef LDM_LOGGING
+    pthread_cleanup_push(freeLogging, nullptr);
+#endif
     fmtpRecvv3* const recvr = static_cast<fmtpRecvv3*>(ptr);
     try {
         recvr->retxHandler();
@@ -1829,6 +1887,9 @@ void* fmtpRecvv3::StartRetxHandler(void* ptr)
     catch (std::exception& e) {
         recvr->taskExit(std::current_exception());
     }
+#ifdef LDM_LOGGING
+    pthread_cleanup_pop(true);
+#endif
     return NULL;
 }
 
@@ -1847,12 +1908,14 @@ void fmtpRecvv3::stopJoinRetxHandler()
     if (!retxHandlerCanceled.test_and_set()) {
         int status = pthread_cancel(retx_t);
         if (status && status != ESRCH) {
-            throw std::runtime_error("fmtpRecvv3::stopJoinMcastHandler() "
+            throw std::system_error(errno, std::system_category(),
+                    "fmtpRecvv3::stopJoinMcastHandler() "
                     "Couldn't cancel retransmission-reception thread");
         }
         status = pthread_join(retx_t, NULL);
         if (status && status != ESRCH) {
-            throw std::runtime_error("fmtpRecvv3::stopJoinRetxHandler() "
+            throw std::system_error(errno, std::system_category(),
+                    "fmtpRecvv3::stopJoinRetxHandler() "
                     "Couldn't join retransmission-reception thread");
         }
     }
@@ -1869,6 +1932,9 @@ void fmtpRecvv3::stopJoinRetxHandler()
 void* fmtpRecvv3::StartMcastHandler(
         void* const arg)
 {
+#ifdef LDM_LOGGING
+    pthread_cleanup_push(freeLogging, nullptr);
+#endif
     fmtpRecvv3* const recvr = static_cast<fmtpRecvv3*>(arg);
     try {
         recvr->mcastHandler();
@@ -1876,6 +1942,9 @@ void* fmtpRecvv3::StartMcastHandler(
     catch (const std::exception& e) {
         recvr->taskExit(std::current_exception());
     }
+#ifdef LDM_LOGGING
+    pthread_cleanup_pop(true);
+#endif
     return NULL;
 }
 
@@ -1891,12 +1960,14 @@ void fmtpRecvv3::stopJoinMcastHandler()
     if (!mcastHandlerCanceled.test_and_set()) {
         int status = pthread_cancel(mcast_t);
         if (status && status != ESRCH) {
-            throw std::runtime_error("fmtpRecvv3::stopJoinMcastHandler() "
+            throw std::system_error(errno, std::system_category(),
+                    "fmtpRecvv3::stopJoinMcastHandler() "
                     "Couldn't cancel multicast thread");
         }
         status = pthread_join(mcast_t, NULL);
         if (status && status != ESRCH) {
-            throw std::runtime_error("fmtpRecvv3::stopJoinMcastHandler() "
+            throw std::system_error(errno, std::system_category(),
+                    "fmtpRecvv3::stopJoinMcastHandler() "
                     "Couldn't join multicast thread");
         }
     }
@@ -1918,7 +1989,7 @@ void fmtpRecvv3::StartRetxProcedure()
     int retval = pthread_create(&retx_t, NULL, &fmtpRecvv3::StartRetxHandler,
                                 this);
     if(retval != 0) {
-        throw std::runtime_error(
+        throw std::system_error(errno, std::system_category(),
             "fmtpRecvv3::StartRetxProcedure() pthread_create() error");
     }
 
@@ -1929,7 +2000,8 @@ void fmtpRecvv3::StartRetxProcedure()
             stopJoinRetxHandler();
         }
         catch (...) {}
-        throw std::runtime_error("fmtpRecvv3::StartRetxProcedure() "
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::StartRetxProcedure() "
                 "pthread_create() failed with retval = "
                 + std::to_string(retval));
     }
@@ -1947,7 +2019,8 @@ void fmtpRecvv3::startTimerThread()
             this);
 
     if(retval != 0) {
-        throw std::runtime_error("fmtpRecvv3::startTimerThread() "
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::startTimerThread() "
                 "pthread_create() failed with retval = " + std::to_string(retval));
     }
 }
@@ -1971,7 +2044,8 @@ void fmtpRecvv3::stopJoinTimerThread()
 
     int status = pthread_join(timer_t, NULL);
     if (status) {
-        throw std::runtime_error("fmtpRecvv3::stopJoinTimerThread() "
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::stopJoinTimerThread() "
                 "Couldn't join timer thread");
     }
 }
@@ -2092,7 +2166,8 @@ void fmtpRecvv3::WriteToLog(const std::string& content)
     int         status = mkdir("logs", 0755);
 
     if (status && status != EEXIST)
-        throw std::runtime_error("fmtpRecvv3::WriteToLog(): unable to create "
+        throw std::system_error(errno, std::system_category(),
+                "fmtpRecvv3::WriteToLog(): unable to create "
                 "logs directory. This could be a permissions issue.");
 
     /* allocate a large enough buffer in case some long hostnames */

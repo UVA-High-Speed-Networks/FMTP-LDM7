@@ -124,7 +124,7 @@ size_t TcpBase::recvall(void* const buf, const size_t nbytes)
  * @throws std::system_error  if an error is encountered writing to the
  *                            socket.
  */
-void TcpBase::sendall(const int sock, void* const buf, size_t nbytes)
+void TcpBase::sendall(const int sock, const void* const buf, size_t nbytes)
 {
     char*  ptr = (char*) buf;
 
@@ -143,7 +143,7 @@ void TcpBase::sendall(const int sock, void* const buf, size_t nbytes)
 
 /**
  * Writes a given number of bytes to a given streaming socket. Returns when that
- * number is written or an error occurs. This is the static memeber function in
+ * number is written or an error occurs. This is the static member function in
  * alternative to the member function sendall().
  *
  * @param[in] sock    The streaming socket.
