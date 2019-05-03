@@ -188,7 +188,25 @@ void fmtpRecvv3::SetLinkSpeed(uint64_t speed)
 void fmtpRecvv3::Start()
 {
     /** connect to the sender */
-    tcprecv->Init();
+    /*
+     * Apparently, just because an AL2S VLAN has just been provisioned for this
+     * host, that doesn't mean the VLAN works just yet.
+     */
+    const int timeout = 120;
+    const int interval = 5;
+    for (int t = 0; t <= timeout; t += interval) {
+        try {
+            tcprecv->Init();
+#ifdef LDM_LOGGING
+            log_debug("Connected to FMTP server after %d seconds", t);
+#endif
+            break;
+        }
+        catch (const std::system_error& ex) {
+            if (t == timeout || ::sleep(interval))
+                throw; // Time is up or a signal interrupted `sleep()`
+        }
+    }
 
     joinGroup(tcpAddr, mcastAddr, mcastPort);
 
@@ -439,7 +457,7 @@ void fmtpRecvv3::BOPHandler(const FmtpHeader& header,
 
         /* Atomic insertion for BOP of new product */
         {
-            ProdTracker tracker = {BOPmsg.prodsize, prodptr, 0, 0};
+            ProdTracker tracker = {BOPmsg.prodsize, prodptr, 0, 0, 0};
             std::unique_lock<std::mutex> lock(trackermtx);
             trackermap[header.prodindex] = tracker;
         }
@@ -603,13 +621,16 @@ void fmtpRecvv3::EOPHandler(const FmtpHeader& header)
      */
     if (pSegMNG->delIfComplete(header.prodindex)) {
         sendRetxEnd(header.prodindex);
-        bool inTracker;
+        bool     inTracker;
+        uint32_t numRetrans;
         {
             std::unique_lock<std::mutex> lock(trackermtx);
             inTracker = trackermap.count(header.prodindex);
+            if (inTracker)
+                numRetrans = trackermap[header.prodindex].numRetrans;
         }
         if (notifier && inTracker) {
-            notifier->endProd(now, header.prodindex);
+            notifier->endProd(now, header.prodindex, numRetrans);
         }
         else if (inTracker) {
             /**
@@ -1127,9 +1148,10 @@ void fmtpRecvv3::retxHandler()
             {
                 std::unique_lock<std::mutex> lock(trackermtx);
                 if (trackermap.count(header.prodindex)) {
-                    ProdTracker tracker = trackermap[header.prodindex];
+                    ProdTracker& tracker = trackermap[header.prodindex];
                     prodsize = tracker.prodsize;
                     prodptr  = tracker.prodptr;
+                    ++tracker.numRetrans;
                 }
             }
 
@@ -1202,13 +1224,16 @@ void fmtpRecvv3::retxHandler()
 
             if (pSegMNG->delIfComplete(header.prodindex)) {
                 sendRetxEnd(header.prodindex);
-                bool inTracker;
+                bool     inTracker;
+                uint32_t numRetrans;
                 {
                     std::unique_lock<std::mutex> lock(trackermtx);
                     inTracker = trackermap.count(header.prodindex);
+                    if (inTracker)
+                        numRetrans = trackermap[header.prodindex].numRetrans;
                 }
                 if (notifier && inTracker) {
-                    notifier->endProd(now, header.prodindex);
+                    notifier->endProd(now, header.prodindex, numRetrans);
                 }
                 else if (inTracker) {
                     /**

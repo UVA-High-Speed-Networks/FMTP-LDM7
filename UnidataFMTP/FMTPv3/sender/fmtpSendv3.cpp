@@ -61,24 +61,55 @@ static void freeLogging(void* arg)
 }
 #endif
 
-// This function is for debugging purposes only
+/**
+ * Logs a message.
+ *
+ * @param[in] msg  Message to be logged
+ */
 inline static void logMsg(const std::string& msg)
 {
+#ifdef LDM_LOGGING
+    log_add(msg.c_str());
+#else
     //std::cerr << msg << std::endl;
+#endif
 }
 
-// This function is for debugging purposes only
-inline static void logMsg(const std::exception& ex)
+/**
+ * Logs a (possibly) nested exception. Messages are logged starting with the
+ * innermost exception and ending with the outermost.
+ *
+ * @param[in] ex       Possible nested exception to be logged
+ * @param isOutermost  Is `ex` the outermost exception?
+ */
+static void logMsg(
+        const std::exception& ex,
+        const bool            isOutermost)
 {
-#if 0
     try {
         std::rethrow_if_nested(ex);
     }
     catch (const std::exception& nested) {
-        logMsg(nested);
+        logMsg(nested, false);
     }
+
     logMsg(ex.what());
+
+#ifdef LDM_LOGGING
+    if (isOutermost)
+        log_flush_error();
 #endif
+}
+
+/**
+ * Logs a potentially nested exception. Messages are logged starting with the
+ * innermost exception and ending with the outermost.
+ *
+ * @param[in] ex       Possible nested exception to be logged
+ */
+inline static void logMsg(const std::exception& ex)
+{
+    logMsg(ex, true);
 }
 
 inline void fmtpSendv3::UdpSerializer::reset()
@@ -200,7 +231,6 @@ fmtpSendv3::fmtpSendv3(const char*                 tcpAddr,
     linkspeed(0),
     exitMutex(),
     except(),
-    exceptIsSet(false),
     coor_t(),
     timer_t(),
     tsnd(tsnd),
@@ -328,6 +358,8 @@ uint32_t fmtpSendv3::sendProduct(void* data, uint32_t dataSize)
 uint32_t fmtpSendv3::sendProduct(void* data, uint32_t dataSize, void* metadata,
                                   uint16_t metaSize)
 {
+    throwIfBroken();
+
     try {
         if (data == NULL)
             throw std::runtime_error(
@@ -367,8 +399,8 @@ uint32_t fmtpSendv3::sendProduct(void* data, uint32_t dataSize, void* metadata,
         timerDelayQ.push(prodIndex, senderProdMeta->retxTimeoutPeriod);
     }
     catch (std::runtime_error& e) {
-        taskExit(e);
-        std::rethrow_exception(except);
+        taskBroke(std::current_exception());
+        throw;
     }
 
 #ifdef MODBASE
@@ -445,8 +477,6 @@ void fmtpSendv3::Start()
 /**
  * Stops this instance. Must be called if `Start()` succeeds. Doesn't return
  * until all threads have stopped.
- *
- * @throws std::exception  If an exception was thrown on a thread.
  */
 void fmtpSendv3::Stop()
 {
@@ -457,13 +487,6 @@ void fmtpSendv3::Stop()
 
     (void)pthread_join(timer_t, NULL);
     (void)pthread_join(coor_t, NULL);
-
-    {
-        std::unique_lock<std::mutex> lock(exitMutex);
-        if (exceptIsSet) {
-            std::rethrow_exception(except);
-        }
-    }
 }
 
 
@@ -575,7 +598,7 @@ void* fmtpSendv3::coordinator(void* ptr)
         }
     }
     catch (std::runtime_error& e) {
-        sendptr->taskExit(e);
+        sendptr->taskBroke(std::current_exception());
     }
 #ifdef LDM_LOGGING
     pthread_cleanup_pop(true);
@@ -791,23 +814,8 @@ void fmtpSendv3::RunRetxThread(int retxsockfd)
              * TcpSend::parseHeader() TcpBase::recvall() recv() returns -1,
              * connection is broken.
              */
-            close(retxsockfd);
-            tcpsend->rmSockInList(retxsockfd);
-            std::list<int> socklist = tcpsend->getConnSockList();
-            if (socklist.empty()) {
-                /* this is the last receiver, should rethrow exception to report */
-                taskExit(e);
-                std::rethrow_exception(except);
-            }
-            // TODO: notify timer not to wait for the offline receiver
-#if 1
             std::throw_with_nested(std::runtime_error(
                     "fmtpSendv3::RunRetxThread(): Couldn't parse header"));
-#else
-            /* if not last receiver, silently exit */
-            pthread_exit(NULL);
-#endif
-            // TODO: notify application a receiver went offline?
         }
         if (parsestate == 0) {
             /* encountered EOF, header incomplete */
@@ -862,23 +870,8 @@ void fmtpSendv3::RunRetxThread(int retxsockfd)
         }
         catch (const std::runtime_error& e) {
             /* same as parseHeader(), if connection broken, take action */
-            close(retxsockfd);
-            tcpsend->rmSockInList(retxsockfd);
-            std::list<int> socklist = tcpsend->getConnSockList();
-            if (socklist.empty()) {
-                /* this is the last receiver, should rethrow exception to report */
-                taskExit(e);
-                std::rethrow_exception(except);
-            }
-            // TODO: notify timer not to wait for the offline receiver
-#if 1
             std::throw_with_nested(std::runtime_error(
                     "fmtpSendv3::RunRetxThread(): Couldn't reply to request"));
-#else
-            /* if not last receiver, silently exit */
-            pthread_exit(NULL);
-            // TODO: notify application a receiver went offline?
-#endif
         }
 
         /* Releases the product metadata in exclusive use */
@@ -1436,6 +1429,9 @@ void* fmtpSendv3::StartRetxThread(void* ptr)
         close(newptr->retxsockfd);
         pthread_t thisThread = ::pthread_self();
         newptr->retxmitterptr->retxThreadList.remove(thisThread);
+
+        // TODO: notify timer not to wait for the offline receiver
+        // TODO: notify application a receiver went offline?
     }
 #ifdef LDM_LOGGING
     pthread_cleanup_pop(true);
@@ -1444,25 +1440,21 @@ void* fmtpSendv3::StartRetxThread(void* ptr)
 }
 
 
-/**
- * Task terminator. If an exception is caught, this function will be called.
- * It consequently terminates all the other threads by calling the Stop(). This
- * task exit call will not be blocking.
- *
- * @param[in] e                     Exception status
- */
-void fmtpSendv3::taskExit(const std::runtime_error& e)
+void fmtpSendv3::taskBroke(const std::exception_ptr& ex)
 {
-    {
-        std::unique_lock<std::mutex> lock(exitMutex);
-        if (!exceptIsSet) {
-            except = std::make_exception_ptr(e);
-            exceptIsSet = true;
-        }
-    }
-    Stop();
+    std::unique_lock<std::mutex> lock(exitMutex);
+
+    if (!except)
+        except = ex;
 }
 
+void fmtpSendv3::throwIfBroken()
+{
+    std::unique_lock<std::mutex> lock(exitMutex);
+
+    if (except)
+        std::rethrow_exception(except);
+}
 
 /**
  * The per-product timer. A product-specified timer element will be created
@@ -1556,7 +1548,7 @@ void* fmtpSendv3::timerWrapper(void* ptr)
         sender->timerThread();
     }
     catch (std::runtime_error& e) {
-        sender->taskExit(e);
+        sender->taskBroke(std::current_exception());
     }
 #ifdef LDM_LOGGING
     pthread_cleanup_pop(true);
